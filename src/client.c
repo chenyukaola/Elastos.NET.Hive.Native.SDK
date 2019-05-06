@@ -56,3 +56,21 @@ int hive_client_close(HiveClient *client)
     client->destructor_func(client);
     return 0;
 }
+
+int hive_client_login(HiveClient *client)
+{
+    // TODO;
+    return -1;
+}
+
+HiveDrive *hive_drive_new(HiveClient *client)
+{
+    // TODO;
+    return NULL;
+}
+
+int hive_drive_close(HiveDrive *drive)
+{
+    // TODO;
+    return 0;
+}

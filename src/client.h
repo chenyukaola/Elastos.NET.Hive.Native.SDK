@@ -7,11 +7,7 @@ extern "C" {
 
 typedef struct HiveClient HiveClient;
 
-struct HiveOAuthInfo {
-    const char *client_id;
-    const char *scope;
-    const char *redirect_url;
-};
+typedef struct HiveDrive HiveDrive;
 
 enum HiveDriveType {
     HiveDriveType_Local     = 0x0,
@@ -39,9 +35,31 @@ typedef struct OneDriveOptions {
     int (*grant_authorize)(const char *request_url);
 } OneDriveOptions;
 
+/*
+ * Create a hive client instance.
+ */
 HiveClient *hive_client_new(const HiveOptions *options);
 
-int hive_client_close(HiveClient *hive);
+/*
+ * Close a hive client instance.
+ */
+int hive_client_close(HiveClient *client);
+
+/*
+ * Login via OAuth2.
+ */
+int hive_client_login(HiveClient *client);
+
+/*
+ *
+ */
+HiveDrive *hive_drive_new(HiveClient *client);
+
+int hive_drive_close(HiveDrive *drive);
+
+
+HIVE_API
+int hivefs_stat(hive_t *hive, const char *path, char **result);
 
 #ifdef __cplusplus
 } // extern "C"

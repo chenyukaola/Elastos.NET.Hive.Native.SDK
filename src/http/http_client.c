@@ -8,7 +8,6 @@
 
 #include "http_client.h"
 
-static CURLSH *curl_share = NULL;
 static pthread_mutex_t share_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t http_client_key;
 
@@ -26,6 +25,10 @@ typedef struct http_response_body {
 } http_response_body_t;
 
 struct http_client {
+    int global_initialized;
+    CURLSH *share;
+    pthread_mutex_t share_lock;
+
     CURL *curl;
     CURLU *url;
     struct curl_slist *hdr;
@@ -115,6 +118,10 @@ int trace_func(CURL *handle, curl_infotype type, char *data, size_t size,
 }
 #endif
 
+int  http_client_init(void) { return 0; }
+
+void http_client_cleanup(void) { }
+
 static
 void curl_share_lock(CURL *handle, curl_lock_data data, curl_lock_access access,
                      void *userptr)
@@ -124,7 +131,7 @@ void curl_share_lock(CURL *handle, curl_lock_data data, curl_lock_access access,
     (void)access;
     (void)userptr;
 
-    pthread_mutex_lock(&share_lock);
+    //pthread_mutex_lock(&share_lock);
 }
 
 static
@@ -134,62 +141,12 @@ void curl_share_unlock(CURL *handle, curl_lock_data data, void *userptr)
     (void)data;
     (void)userptr;
 
-    pthread_mutex_unlock(&share_lock);
-}
-
-static void http_client_destructor(void *arg)
-{
-    assert(arg);
-
-    http_client_close((http_client_t *)arg);
-}
-
-int http_client_init()
-{
-    CURLcode code;
-    int rc;
-
-    code = curl_global_init(CURL_GLOBAL_ALL);
-    if (code != CURLE_OK) {
-        vlogE("HttpClient: Initialize global curl error (%d)", code);
-        return __curlcode_to_error(code);
-    }
-
-    code = CURLE_OUT_OF_MEMORY;
-    curl_share = curl_share_init();
-    if (!curl_share) {
-        vlogE("HttpClient: Initialize curl share error.");
-        http_client_cleanup();
-        return __curlcode_to_error(code);
-    }
-
-    rc = pthread_key_create(&http_client_key, http_client_destructor);
-    if (rc)  {
-        http_client_cleanup();
-        return __curlcode_to_error(code);
-    }
-
-    curl_share_setopt(curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
-    curl_share_setopt(curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
-    curl_share_setopt(curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
-    curl_share_setopt(curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
-    curl_share_setopt(curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_PSL);
-    curl_share_setopt(curl_share, CURLSHOPT_LOCKFUNC, curl_share_lock);
-    curl_share_setopt(curl_share, CURLSHOPT_UNLOCKFUNC, curl_share_unlock);
-
-    return 0;
-}
-
-void http_client_cleanup(void)
-{
-    pthread_key_delete(http_client_key);
-    curl_share_cleanup(curl_share);
+    //pthread_mutex_unlock(&share_lock);
 }
 
 static void http_client_destroy(void *ptr)
 {
     http_client_t *client = (http_client_t *)ptr;
-
     assert(client);
 
     if (client->curl)
@@ -198,35 +155,57 @@ static void http_client_destroy(void *ptr)
         curl_url_cleanup(client->url);
     if (client->hdr)
         curl_slist_free_all(client->hdr);
+
+    if (client->share)
+        curl_share_cleanup(client->share);
+
+    if (client->global_initialized)
+        curl_global_cleanup();
 }
 
 http_client_t *http_client_new(void)
 {
     http_client_t *client;
+    CURLcode code;
 
-    client = (http_client_t *)pthread_getspecific(http_client_key);
-    if (!client) {
-        client = (http_client_t *)rc_zalloc(sizeof(http_client_t), http_client_destroy);
-        if (!client) {
-            // hive_set_error();
-            return NULL;
-        }
+    client = (http_client_t *)rc_zalloc(sizeof(http_client_t), http_client_destroy);
+    if (!client)
+        return NULL;
 
-        client->url = curl_url();
-        if (!client->url) {
-        // hive_set_error(); out of memory.
-            deref(client);
-            return NULL;
-        }
+    code = curl_global_init(CURL_GLOBAL_ALL);
+    if (code != CURLE_OK) {
+        vlogE("HttpClient: Initialize global curl error (%d)", code);
+        deref(client);
+        return NULL;
+    }
 
-        client->curl = curl_easy_init();
-        if (!client->curl) {
-        // hive_set_error(); out of memory.
-            deref(client);
-            return NULL;
-        }
-    } else {
-        http_client_reset(client);
+    client->global_initialized = 1;
+
+    client->share = curl_share_init();
+    if (!client->share) {
+        vlogE("HttpClient: Initialize curl share error.");
+        deref(client);
+        return NULL;
+    }
+
+    curl_share_setopt(client->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
+    curl_share_setopt(client->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+    curl_share_setopt(client->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    curl_share_setopt(client->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+    curl_share_setopt(client->share, CURLSHOPT_SHARE, CURL_LOCK_DATA_PSL);
+    curl_share_setopt(client->share, CURLSHOPT_LOCKFUNC, curl_share_lock);
+    curl_share_setopt(client->share, CURLSHOPT_UNLOCKFUNC, curl_share_unlock);
+
+    client->url = curl_url();
+    if (!client->url) {
+        deref(client);
+        return NULL;
+    }
+
+    client->curl = curl_easy_init();
+    if (!client->curl) {
+        deref(client);
+        return NULL;
     }
 
 #ifndef NDEBUG
@@ -234,16 +213,15 @@ http_client_t *http_client_new(void)
     curl_easy_setopt(client->curl, CURLOPT_VERBOSE, 1L);
 #endif
     curl_easy_setopt(client->curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(client->curl, CURLOPT_SHARE, curl_share);
+    curl_easy_setopt(client->curl, CURLOPT_SHARE, client->share);
     curl_easy_setopt(client->curl, CURLOPT_CURLU, client->url);
-
-    pthread_setspecific(http_client_key, client);
 
     return client;
 }
 
 void http_client_close(http_client_t *client)
 {
+    if (client->curl)
     if (client)
         deref(client);
 }
