@@ -36,6 +36,20 @@ typedef struct HiveClient       HiveClient;
 typedef struct HiveClientInfo   HiveClientInfo;
 typedef struct HiveDrive        HiveDrive;
 typedef struct HiveDriveInfo    HiveDriveInfo;
+typedef struct HiveFile         HiveFile;
+
+#define HIVE_FILE_RDONLY (1U << 0)
+#define HIVE_FILE_WRONLY (1U << 1)
+#define HIVE_FILE_RDWR   (1U << 2)
+#define HIVE_FILE_APPEND (1U << 3)
+#define HIVE_FILE_CREAT  (1U << 4)
+#define HIVE_FILE_TRUNC  (1U << 5)
+typedef unsigned HiveFileOpenFlags;
+
+#define HIVE_SEEK_SET    (1U << 0)
+#define HIVE_SEEK_CUR    (1U << 1)
+#define HIVE_SEEK_END    (1U << 2)
+typedef unsigned HiveFileSeekWhence;
 
 struct HiveOAuthInfo {
     const char *client_id;
@@ -139,6 +153,24 @@ int hive_drive_copy_file(HiveDrive *, const char *src_path, const char *dest_pat
 
 HIVE_API
 int hive_drive_delete_file(HiveDrive *, const char *path);
+
+HIVE_API
+HiveFile *hive_file_open(HiveDrive *drive, const char *path, HiveFileOpenFlags flags);
+
+HIVE_API
+int hive_file_close(HiveFile *file);
+
+HIVE_API
+char *hive_file_get_path(HiveFile *file, char *buf, size_t bufsz);
+
+HIVE_API
+ssize_t hive_file_lseek(HiveFile *, size_t offset, HiveFileSeekWhence whence);
+
+HIVE_API
+ssize_t hive_file_read(HiveFile *, char *buf, size_t bufsz);
+
+HIVE_API
+ssize_t hive_file_write(HiveFile *file, const char *buf, size_t bufsz);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -139,3 +139,31 @@ int hive_drive_close(HiveDrive *drive)
     drive->close(drive);
     return 0;
 }
+
+#define HIVE_FILE_OPS_FLAGS (HIVE_FILE_RDONLY | HIVE_FILE_WRONLY | HIVE_FILE_RDWR)
+#define HIVE_FILE_WR_OPT_FLAGS (HIVE_FILE_APPEND | HIVE_FILE_CREAT | HIVE_FILE_TRUNC)
+HiveFile *hive_file_open(HiveDrive *drv, const char *path, HiveFileOpenFlags mode)
+{
+    HiveFile *file;
+    HiveFileOpenFlags op = mode & HIVE_FILE_OPS_FLAGS;
+    HiveFileOpenFlags wr_opt = mode & HIVE_FILE_WR_OPT_FLAGS;
+
+    if (!drv || !path || path[0] != '/' || path[1] == '\0' || !mode)
+        return NULL;
+
+    if (op == HIVE_FILE_RDONLY) {
+        if (wr_opt)
+            return NULL;
+    } else if (op == HIVE_FILE_WRONLY || op == HIVE_FILE_RDWR) {
+        if ((wr_opt & HIVE_FILE_CREAT) && (wr_opt & ~HIVE_FILE_CREAT))
+            return NULL;
+    } else {
+        return NULL;
+    }
+
+    ref(drv);
+    file = drv->open_file(drv, path, mode);
+    deref(drv);
+
+    return file;
+}

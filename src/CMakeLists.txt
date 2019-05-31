@@ -42,6 +42,7 @@ endif()
 set(SRC
     client.c
     drive.c
+    file.c
     oauth_client.c
     sandbird/sandbird.c
     http/http_client.c
@@ -50,7 +51,8 @@ set(SRC
     vendors/ipfs/ipfs_drive.c
     vendors/onedrive/onedrive_client.c
     vendors/onedrive/onedrive_drive.c
-    vendors/owncloud/owncloud.c)
+    vendors/onedrive/onedrive_file.c
+    vendors/owncloud/owncloud.c
 
 set(HEADERS
     ela_hive.h)
