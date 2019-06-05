@@ -14,6 +14,8 @@ struct HiveDrive {
     int (*copy_file)    (HiveDrive *, const char *from, const char *to);
     int (*delete_file)  (HiveDrive *, const char *path);
     void (*close)       (HiveDrive *);
+
+    int (*open_file)(HiveDrive *, const char* path, HiveFileOpenFlags flags, HiveFile **file);
 };
 
 #endif // __DRIVE_H__

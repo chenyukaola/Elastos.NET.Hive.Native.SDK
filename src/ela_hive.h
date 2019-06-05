@@ -161,7 +161,7 @@ HIVE_API
 int hive_file_close(HiveFile *file);
 
 HIVE_API
-char *hive_file_get_path(HiveFile *file, char *buf, size_t bufsz);
+int hive_file_get_path(HiveFile *file, char *buf, size_t bufsz);
 
 HIVE_API
 ssize_t hive_file_lseek(HiveFile *, size_t offset, HiveFileSeekWhence whence);
