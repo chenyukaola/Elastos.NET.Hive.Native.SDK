@@ -27,6 +27,7 @@
 
 typedef struct OneDriveDrive {
     HiveDrive base;
+    int fd;
     oauth_client_t *credential;
     char drv_url[0];
 } OneDriveDrive ;
@@ -891,6 +892,24 @@ static void onedrive_drive_destroy(void *obj)
     deref(drive->credential);
 }
 
+//add by chenyu
+static int onedrive_drive_file_open(HiveDrive *base, const char* path, HiveFileOpenFlags flags, HiveFile **file)
+{
+   // OneDriveDrive * drive = (OneDriveDrive*)base;
+    HiveFile *hive_file;
+    int rc;
+
+    assert(path);
+
+    hive_file = onedrive_file_open(base, path, flags);
+    if(!hive_file)
+        return -1;
+
+    *file = hive_file;
+    return 0;
+}
+//end add
+
 HiveDrive *onedrive_drive_open(oauth_client_t *credential, const char *drive_id)
 {
     OneDriveDrive *drive;
@@ -931,6 +950,8 @@ HiveDrive *onedrive_drive_open(oauth_client_t *credential, const char *drive_id)
     drive->base.copy_file   = &onedrive_drive_copy_file;
     drive->base.delete_file = &onedrive_drive_delete_file;
     drive->base.close       = &onedrive_drive_close;
+    //add by chenyu
+    drive->base.get_file    = &onedrive_drive_file_open;
 
     return &drive->base;
 }

@@ -4,30 +4,183 @@
 #include <stdbool.h>
 #include <crystal.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <sys/stat.h>
 
 #include "onedrive_file.h"
 #include "http_client.h"
 #include "oauth_client.h"
 
+#define FILE_LARGE_SIZE 4096
+
 typedef struct OneDriveFile {
     HiveFile base;
-    char file_path[MAXPATHLEN+1];
-    //char local_path[MAXPATHLEN+1];
+    int fd;
+    int upload_flag;
+    char file_path[ MAXPATHLEN + 1];
+    char local_path[MAXPATHLEN + MAXPATHLEN + 1];
     HiveFileOpenFlags flags;
 } OneDriveFile;
+
+static int get_item_id(HiveDrive *obj, const char *path)
+{
+    OneDriveDrive *drive = (OneDriveDrive*)obj;
+
+    char* access_token = NULL;
+    char url[MAXPATHLEN + 1];
+    int item_id;
+    int rc;
+    long resp_code;
+    http_client_t *httpc = NULL;
+    char *resp_body_str = NULL;
+    cJSON *resp_part = NULL;
+    cJSON *item_part = NULL;
+
+    rc = oauth_client_get_access_token(drive->credential, &access_token);
+    if(rc)
+        goto error_exit;
+
+    httpc = http_client_new();
+    if(!httpc)
+        goto error_exit;
+
+    path_esc = http_client_escape(httpc, path, strlen(path));
+    http_client_reset(httpc);
+    if(!path_esc)
+        goto error_exit;
+
+    rc = snprintf(url, sizeof(url), "%s/root:%s", drive->drv_url, path_esc);
+    http_client_memory_free(path_esc);
+    if (rc < 0 || rc >= sizeof(url))
+        goto error_exit;
+
+    http_client_set_url_escape(httpc, url);
+    http_client_set_method(httpc, HTTP_METHOD_GET);
+    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Authorization", access_token);
+
+    rc = http_client_request(httpc);
+    if (rc)
+        goto error_exit;
+
+    rc = http_client_get_response_code(httpc, &resp_code);
+    if (rc < 0)
+        goto error_exit;
+
+    if(resp_code == 401) {
+        oauth_client_set_expired(drv->credential);
+        goto error_exit;
+    }
+
+    if (resp_code != 200)
+        goto error_exit;
+
+    resp_body_str = http_client_move_response_body(httpc, NULL);
+    if (!resp_body_str) {
+        goto error_exit;
+
+    resp_part = cJSON_Parse(resp_body_str);
+    if (!resp_part)
+        goto error_exit;
+
+    item_part = cJSON_GetObjectItemCaseSensitive(resp_part, "id");
+    free(resp_part);
+    resp_part = NULL;
+    if (!item_part)
+        goto error_exit;
+
+    http_client_close(httpc);
+
+    return item_part->valueint;
+
+error_exit:
+    if(access_token)
+        free(access_token);
+    if(httpc)
+        http_client_close(httpc);
+
+    return -1;
+}
+
+static int upload_small_file(HiveDrive *obj)
+{
+    OneDriveDrive *drive = (OneDriveDrive*)obj;
+
+    char* access_token = NULL;
+    char url[MAXPATHLEN + 1];
+    int item_id;
+    int rc;
+    long resp_code;
+    http_client_t *httpc = NULL;
+    char *resp_body_str = NULL;
+    cJSON *resp_part = NULL;
+    cJSON *item_part = NULL;
+
+    item_id = get_item_id(obj);
+
+    rc = oauth_client_get_access_token(drive->credential, &access_token);
+    if(rc)
+        goto error_exit;
+
+    httpc = http_client_new();
+    if(!httpc)
+        goto error_exit;
+
+    rc = snprintf(url, sizeof(url), "%s/items/%s/content", drive->drv_url, item_id);
+    if (rc < 0 || rc >= sizeof(url))
+        goto error_exit;
+
+    http_client_set_url_escape(httpc, url);
+    http_client_set_method(httpc, HTTP_METHOD_PUT);
+    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Authorization", access_token);
+    http_client_set_request_body(httpc, NULL, (void *)drive->fd);
+
+    rc = http_client_request(httpc);
+    if (rc)
+        goto error_exit;
+
+    rc = http_client_get_response_code(httpc, &resp_code);
+    if (rc < 0)
+        goto error_exit;
+
+    if(resp_code == 401) {
+        oauth_client_set_expired(drv->credential);
+        goto error_exit;
+    }
+
+    if (resp_code != 201)
+        goto error_exit;
+
+    http_client_close(httpc);
+
+    return 0;
+
+error_exit:
+    if(access_token)
+        free(access_token);
+    if(httpc)
+        http_client_close(httpc);
+
+    return -1;
+}
+static int file_size(const char* path)
+{
+    struct stat statbuf;
+    stat(path,&statbuf);
+
+    return statbuf.st_size;
+}
 
 static ssize_t onedrive_file_read(HiveFile * file, char *buf, size_t bufsz)
 {
     OneDriveFile *drv_file = (OneDriveFile*)file;
-    int fd;
     ssize_t len;
 
-    fd = open(drv_file->file_path, flags);
-    if(fd == -1)
+    if(drv_file->fd <= 0)
         return -1;
 
-    len = read(fd, buf, bufsz);
-    close(fd);
+    len = read(drv_file->fd, buf, bufsz);
 
     return len;
 }
@@ -38,15 +191,14 @@ static ssize_t onedrive_file_write(HiveFile *file, const char *buf, size_t bufsz
     int fd;
     ssize_t len;
 
-    fd = open(drv_file->file_path, flags);
-    if(fd == -1)
+    if(drv_file->fd <= 0)
         return -1;
 
-    len = write(fd, buf, bufsz);
-    close(fd);
+    len = write(drv_file->fd, buf, bufsz);
+    if(len < 0)
+        drv_file->upload_flag = 0;
 
-    //TOdo: to upload to onedrive
-
+    drv_file->upload_flag = 1;
 
     return len;
 }
@@ -54,17 +206,40 @@ static ssize_t onedrive_file_write(HiveFile *file, const char *buf, size_t bufsz
 static ssize_t onedrive_file_lseek(HiveFile *file, size_t offset, HiveFileSeekWhence whence)
 {
     OneDriveFile *drv_file = (OneDriveFile*)file;
-    int fd;
     ssize_t len;
 
-    fd = open(drv_file->file_path, flags);
-    if(fd == -1)
+    if(drv_file->fd <= 0)
         return -1;
 
-    len = lseek(fd, offset, whence);
-    close(fd);
+    len = lseek(drv_file->fd, offset, whence);
 
     return len;
+}
+
+static int ondrive_file_close(HiveFile *file)
+{
+    OneDriveFile *drv_file = (OneDriveFile*)file;
+    int rc;
+
+    if(drv_file->fd <= 0)
+        return -1;
+
+    if(drv_file->upload_flag) {
+        if(file_size(drv_file->local_path) <= FILE_LARGE_SIZE){
+            if(upload_small_file(file) == -1)
+                return -1;
+        }
+        else {      //large file
+
+        }
+
+    }
+
+    rc = close(drv_file->fd);
+    if(rc)
+        return -1;
+
+    return remove(drv_file->local_path);;
 }
 
 static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
@@ -147,24 +322,10 @@ error_exit:
     if(httpc)
         http_client_close(httpc);
 
-    return NULL;
+    return -1;
 }
 
-static int onedrive_file_close(HiveFile *file)
-{
-    OneDriveFile *drv_file = (OneDriveFile*)file;
-    int fd;
-    int rc;
 
-    fd = open(drv_file->file_path, flags);
-    if(fd == -1)
-        return -1;
-
-    rc = close(fd);
-    close(fd);
-
-    return rc;
-}
 
 HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags flags)
 {
@@ -175,7 +336,7 @@ HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags
     char url[MAXPATHLEN + 1];
     char download_url[MAXPATHLEN + 1];
     size_t len;
-    int rc;
+    int rc, fd;
     long resp_code;
     char* access_token = NULL;
     http_client_t *httpc = NULL;
@@ -240,13 +401,19 @@ HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags
 
         strcpy(download_url, location_part->valuestring);
 
-        //Todo: how to download file
-
         http_client_close(httpc);
     }
 
-    file->base = base;
+    strcpy(file->local_path, persistent_location);
+    strcat(file->local_path, path);
+    //Todo: how to download file
+
     file->flags = flags;
+    file->upload_flag = 0;
+
+    fd = open(file->local_path, flags);
+    if(fd != -1)
+        file->fd = fd;
     //Todo:
 
     file->base.read = &onedrive_file_read;
