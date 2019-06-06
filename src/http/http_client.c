@@ -716,3 +716,31 @@ void http_client_memory_free(void *ptr)
 {
     curl_free(ptr);
 }
+
+//add by chenyu
+int http_client_set_upload_file(http_client_t *client, int fd, char* url, int fsize)
+{
+    CURLcode code;
+
+    assert(client);
+    assert(fd > 0);
+    assert(url);
+    assert(fsize > 0);
+
+    /* enable uploading */
+    curl_easy_setopt(client->curl, CURLOPT_UPLOAD, 1L);
+    /* specify target */
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    /* now specify which file to upload */
+    curl_easy_setopt(curl, CURLOPT_READDATA, fd);
+
+    curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)fsize);
+
+    return 0;
+}
+
+int http_client_set_download_file(http_client_t *client, int fd)
+{
+
+}
+

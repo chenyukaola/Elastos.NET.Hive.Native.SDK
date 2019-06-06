@@ -102,7 +102,7 @@ error_exit:
     return -1;
 }
 
-static int upload_small_file(HiveDrive *obj)
+static int upload_small_file(HiveDrive *obj, int fsize)
 {
     OneDriveDrive *drive = (OneDriveDrive*)obj;
 
@@ -134,7 +134,7 @@ static int upload_small_file(HiveDrive *obj)
     http_client_set_method(httpc, HTTP_METHOD_PUT);
     http_client_enable_response_body(httpc);
     http_client_set_header(httpc, "Authorization", access_token);
-    http_client_set_request_body(httpc, NULL, (void *)drive->fd);
+    http_client_set_upload_file(httpc, drive->fd, url, fsize);
 
     rc = http_client_request(httpc);
     if (rc)
@@ -164,6 +164,12 @@ error_exit:
 
     return -1;
 }
+
+static upload_large_file(HiveFile *file, int fsize)
+{
+
+}
+
 static int file_size(const char* path)
 {
     struct stat statbuf;
@@ -225,8 +231,9 @@ static int ondrive_file_close(HiveFile *file)
         return -1;
 
     if(drv_file->upload_flag) {
-        if(file_size(drv_file->local_path) <= FILE_LARGE_SIZE){
-            if(upload_small_file(file) == -1)
+        int len = file_size(drv_file->local_path);
+        if(len <= FILE_LARGE_SIZE){
+            if(upload_small_file(file, len) == -1)
                 return -1;
         }
         else {      //large file
