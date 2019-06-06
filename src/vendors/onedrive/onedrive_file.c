@@ -11,7 +11,8 @@
 #include "http_client.h"
 #include "oauth_client.h"
 
-#define FILE_LARGE_SIZE 4096
+#define FILE_LARGE_SIZE 1024*1024
+#define FILE_MAX_LARGE_SIZE 1048576*60
 
 typedef struct OneDriveFile {
     HiveFile base;
@@ -117,6 +118,8 @@ static int upload_small_file(HiveDrive *obj, int fsize)
     cJSON *item_part = NULL;
 
     item_id = get_item_id(obj);
+    if(item_id < 0)
+        goto error_exit;
 
     rc = oauth_client_get_access_token(drive->credential, &access_token);
     if(rc)
@@ -165,8 +168,116 @@ error_exit:
     return -1;
 }
 
-static upload_large_file(HiveFile *file, int fsize)
+static int upload_large_file(HiveFile *file, int fsize)
 {
+    OneDriveDrive *drive = (OneDriveDrive*)obj;
+
+    char url[MAXPATHLEN + 1];
+    char upload_url[MAXPATHLEN + 1];
+    char *access_token = NULL;
+    char *resp_body_str = NULL;
+    cJSON *req_body = NULL;
+    cJSON *parent_ref = NULL;
+    cJSON *resp_part = NULL;
+    cJSON *uploadurl_part = NULL;
+    int rc, item_id;
+
+    req_body = cJSON_CreateObject();
+    if (!req_body)
+        goto error_exit;
+
+    parent_ref = cJSON_AddObjectToObject(req_body, "item");
+    if (!parent_ref)
+       goto error_exit;
+
+    if(!cJSON_AddObjectToObject(parent_ref, "@microsoft.graph.conflictBehavior", "replace"))
+        goto error_exit;
+
+    rc = oauth_client_get_access_token(drv->credential, &access_token);
+    if (rc)
+        goto error_exit;
+
+    httpc = http_client_new();
+    if (!httpc)
+        goto error_exit;
+
+    item_id = get_item_id(obj);
+    if(item_id < 0)
+        goto error_exit;
+
+    //1.Create an upload session
+    rc = snprintf(url, sizeof(url), "%s/items/%s/createUploadSession", drive->drv_url, item_id);
+    if (rc < 0 || rc >= sizeof(url))
+        goto error_exit;
+
+    http_client_set_url_escape(httpc, url);
+    http_client_set_method(httpc, HTTP_METHOD_POST);
+    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Authorization", access_token);
+    //http_client_set_upload_file(httpc, drive->fd, url, fsize);
+
+    rc = http_client_request(httpc);
+    if (rc)
+        goto error_exit;
+
+    rc = http_client_get_response_code(httpc, &resp_code);
+    if (rc < 0)
+        goto error_exit;
+
+    if(resp_code == 401) {
+        oauth_client_set_expired(drv->credential);
+        goto error_exit;
+    }
+
+    if (resp_code != 200)
+        goto error_exit;
+
+    resp_body_str = http_client_move_response_body(httpc, NULL);
+    if (!resp_body_str) {
+        goto error_exit;
+
+    resp_part = cJSON_Parse(resp_body_str);
+    if (!resp_part)
+        goto error_exit;
+
+    uploadurl_part = cJSON_GetObjectItemCaseSensitive(resp_part, "uploadUrl");
+    free(resp_part);
+    resp_part = NULL;
+    if (!uploadurl_part || (uploadurl_part && (!*uploadurl_part->valuestring)))
+        goto error_exit;
+
+    //2.Upload bytes to the upload session
+    http_client_reset(httpc);
+
+    strcpy(url, uploadurl_part->valuestring);
+
+    http_client_set_url_escape(httpc, url);
+    http_client_set_method(httpc, HTTP_METHOD_PUT);
+    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Authorization", access_token);
+    //http_client_set_upload_file(httpc, drive->fd, url, fsize);
+
+
+
+
+
+
+
+
+
+
+    http_client_close(httpc);
+
+
+error_exit:
+    if(access_token)
+        free(access_token);
+    if(httpc)
+        http_client_close(httpc);
+    if (req_body)
+        cJSON_Delete(req_body);
+
+    return -1;
 
 }
 
@@ -276,51 +387,50 @@ static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
     if (rc < 0 || rc >= sizeof(url))
         goto error_exit;
 
-    while (true) {
-        http_client_set_url_escape(httpc, url);
-        http_client_set_method(httpc, HTTP_METHOD_GET);
-        http_client_enable_response_body(httpc);
-        http_client_set_header(httpc, "Authorization", access_token);
+    http_client_set_url_escape(httpc, url);
+    http_client_set_method(httpc, HTTP_METHOD_GET);
+    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Authorization", access_token);
 
-        rc = http_client_request(httpc);
-        if (rc)
-            goto error_exit;
+    rc = http_client_request(httpc);
+    if (rc)
+        goto error_exit;
 
-        rc = http_client_get_response_code(httpc, &resp_code);
-        if (rc < 0)
-            goto error_exit;
+    rc = http_client_get_response_code(httpc, &resp_code);
+    if (rc < 0)
+        goto error_exit;
 
-        if(resp_code == 401) {
-            oauth_client_set_expired(drv->credential);
-            goto error_exit;
-        }
-
-        if (resp_code != 200)
-            goto error_exit;
-
-        resp_body_str = http_client_move_response_body(httpc, NULL);
-        if (!resp_body_str) {
-            goto error_exit;
-
-        resp_part = cJSON_Parse(resp_body_str);
-        if (!resp_part)
-            goto error_exit;
-
-        root_part = cJSON_GetObjectItemCaseSensitive(resp_part, "root");
-        free(resp_part);
-        resp_part = NULL;
-        if (!root_part || (root_part && (!*root_part->valuestring)))
-            goto error_exit;
-
-        len = strlen(root_part->valuestring) + strlen(drv_file->file_path) + 1;
-        if(len > bufsz)
-            goto error_exit;
-
-        strcpy(buf, root_part->valuestring);
-        strcat(buf, drv_file->file_path);
-
-        http_client_close(httpc);
+    if(resp_code == 401) {
+        oauth_client_set_expired(drv->credential);
+        goto error_exit;
     }
+
+    if (resp_code != 200)
+        goto error_exit;
+
+    resp_body_str = http_client_move_response_body(httpc, NULL);
+    if (!resp_body_str) {
+        goto error_exit;
+
+    resp_part = cJSON_Parse(resp_body_str);
+    if (!resp_part)
+        goto error_exit;
+
+    root_part = cJSON_GetObjectItemCaseSensitive(resp_part, "root");
+    free(resp_part);
+    resp_part = NULL;
+    if (!root_part || (root_part && (!*root_part->valuestring)))
+        goto error_exit;
+
+    len = strlen(root_part->valuestring) + strlen(drv_file->file_path) + 1;
+    if(len > bufsz)
+        goto error_exit;
+
+    strcpy(buf, root_part->valuestring);
+    strcat(buf, drv_file->file_path);
+
+    http_client_close(httpc);
+
     return 0;
 
 error_exit:
@@ -370,46 +480,44 @@ HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags
     if (rc < 0 || rc >= sizeof(url))
         goto error_exit;
 
-    while (true) {
-        http_client_set_url_escape(httpc, url);
-        http_client_set_method(httpc, HTTP_METHOD_GET);
-        http_client_enable_response_body(httpc);
-        http_client_set_header(httpc, "Authorization", access_token);
+    http_client_set_url_escape(httpc, url);
+    http_client_set_method(httpc, HTTP_METHOD_GET);
+    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Authorization", access_token);
 
-        rc = http_client_request(httpc);
-        if (rc)
-            goto error_exit;
+    rc = http_client_request(httpc);
+    if (rc)
+        goto error_exit;
 
-        rc = http_client_get_response_code(httpc, &resp_code);
-        if (rc < 0)
-            goto error_exit;
+    rc = http_client_get_response_code(httpc, &resp_code);
+    if (rc < 0)
+        goto error_exit;
 
-        if(resp_code == 401) {
-            oauth_client_set_expired(drv->credential);
-            goto error_exit;
-        }
-
-        if (resp_code != 302)
-            goto error_exit;
-
-        resp_body_str = http_client_move_response_body(httpc, NULL);
-        if (!resp_body_str) {
-            goto error_exit;
-
-        resp_part = cJSON_Parse(resp_body_str);
-        if (!resp_part)
-            goto error_exit;
-
-        location_part = cJSON_GetObjectItemCaseSensitive(resp_part, "Location");
-        free(resp_part);
-        resp_part = NULL;
-        if (!location_part || (location_part && (!*location_part->valuestring)))
-            goto error_exit;
-
-        strcpy(download_url, location_part->valuestring);
-
-        http_client_close(httpc);
+    if(resp_code == 401) {
+        oauth_client_set_expired(drv->credential);
+        goto error_exit;
     }
+
+    if (resp_code != 302)
+        goto error_exit;
+
+    resp_body_str = http_client_move_response_body(httpc, NULL);
+    if (!resp_body_str) {
+        goto error_exit;
+
+    resp_part = cJSON_Parse(resp_body_str);
+    if (!resp_part)
+        goto error_exit;
+
+    location_part = cJSON_GetObjectItemCaseSensitive(resp_part, "Location");
+    free(resp_part);
+    resp_part = NULL;
+    if (!location_part || (location_part && (!*location_part->valuestring)))
+        goto error_exit;
+
+    strcpy(download_url, location_part->valuestring);
+
+    http_client_close(httpc);
 
     strcpy(file->local_path, persistent_location);
     strcat(file->local_path, path);

@@ -728,7 +728,7 @@ int http_client_set_upload_file(http_client_t *client, int fd, char* url, int fs
     assert(fsize > 0);
 
     /* enable uploading */
-    curl_easy_setopt(client->curl, CURLOPT_UPLOAD, 1L);
+    code = curl_easy_setopt(client->curl, CURLOPT_UPLOAD, 1L);
     /* specify target */
     curl_easy_setopt(curl, CURLOPT_URL, url);
     /* now specify which file to upload */
