@@ -78,12 +78,6 @@ char *http_client_move_response_body(http_client_t *, size_t *len);
 int http_client_get_response_code(http_client_t *, long *response_code);
 
 /*
- * Http client upload/download API
- */
-int http_client_set_upload_file(http_client_t *client, int fd);
-int http_client_set_download_file(http_client_t *client, int fd);
-
-/*
  * Http client request API
  */
 int http_client_request(http_client_t *client);

@@ -11,7 +11,9 @@
 #include "http_client.h"
 #include "oauth_client.h"
 
-#define FILE_LARGE_SIZE 1024*1024
+#define CONTENT_LEN         128
+#define FILE_LARGE_SIZE     1024*1024
+#define FILE_FRAGEMENT_SIZE 327680
 #define FILE_MAX_LARGE_SIZE 1048576*60
 
 typedef struct OneDriveFile {
@@ -22,6 +24,12 @@ typedef struct OneDriveFile {
     char local_path[MAXPATHLEN + MAXPATHLEN + 1];
     HiveFileOpenFlags flags;
 } OneDriveFile;
+
+static size_t download_file(void *ptr, size_t size, size_t nmemb, void *stream)
+{
+    size_t written = fwrite(ptr, size, nmemb, (FILE *)stream);
+    return written;
+}
 
 static int get_item_id(HiveDrive *obj, const char *path)
 {
@@ -121,6 +129,8 @@ static int upload_small_file(HiveDrive *obj, int fsize)
     if(item_id < 0)
         goto error_exit;
 
+    char *req_body = "The contents of the file goes here.";
+
     rc = oauth_client_get_access_token(drive->credential, &access_token);
     if(rc)
         goto error_exit;
@@ -135,9 +145,10 @@ static int upload_small_file(HiveDrive *obj, int fsize)
 
     http_client_set_url_escape(httpc, url);
     http_client_set_method(httpc, HTTP_METHOD_PUT);
+    http_client_set_header(httpc, "Content-Type", "text/plain");
     http_client_enable_response_body(httpc);
     http_client_set_header(httpc, "Authorization", access_token);
-    http_client_set_upload_file(httpc, drive->fd, url, fsize);
+    http_client_set_request_body_instant(httpc, req_body, strlen(req_body));
 
     rc = http_client_request(httpc);
     if (rc)
@@ -174,6 +185,7 @@ static int upload_large_file(HiveFile *file, int fsize)
 
     char url[MAXPATHLEN + 1];
     char upload_url[MAXPATHLEN + 1];
+    char fragment_size[2];
     char *access_token = NULL;
     char *resp_body_str = NULL;
     cJSON *req_body = NULL;
@@ -181,6 +193,10 @@ static int upload_large_file(HiveFile *file, int fsize)
     cJSON *resp_part = NULL;
     cJSON *uploadurl_part = NULL;
     int rc, item_id;
+    int i = 0;
+
+    int file_len = file_size(file->local_path);
+    snprintf(fragment_size, 2, "%d", file_len);
 
     req_body = cJSON_CreateObject();
     if (!req_body)
@@ -190,7 +206,19 @@ static int upload_large_file(HiveFile *file, int fsize)
     if (!parent_ref)
        goto error_exit;
 
+    if(!cJSON_AddObjectToObject(parent_ref, "@odata.type", "microsoft.graph.driveItemUploadableProperties"))
+        goto error_exit;
+
     if(!cJSON_AddObjectToObject(parent_ref, "@microsoft.graph.conflictBehavior", "replace"))
+        goto error_exit;
+
+    if(!cJSON_AddObjectToObject(parent_ref, "name", basename(file->local_path)));
+        goto error_exit;
+
+    req_body_str = cJSON_PrintUnformatted(req_body);
+    cJSON_Delete(req_body);
+    req_body = NULL;
+    if (!req_body_str)
         goto error_exit;
 
     rc = oauth_client_get_access_token(drv->credential, &access_token);
@@ -212,9 +240,10 @@ static int upload_large_file(HiveFile *file, int fsize)
 
     http_client_set_url_escape(httpc, url);
     http_client_set_method(httpc, HTTP_METHOD_POST);
-    http_client_enable_response_body(httpc);
+    http_client_set_header(httpc, "Content-Type", "application/json");
     http_client_set_header(httpc, "Authorization", access_token);
-    //http_client_set_upload_file(httpc, drive->fd, url, fsize);
+    http_client_set_request_body_instant(httpc, req_body_str, strlen(req_body_str));
+    http_client_enable_response_body(httpc);
 
     rc = http_client_request(httpc);
     if (rc)
@@ -248,26 +277,89 @@ static int upload_large_file(HiveFile *file, int fsize)
 
     //2.Upload bytes to the upload session
     http_client_reset(httpc);
-
     strcpy(url, uploadurl_part->valuestring);
 
     http_client_set_url_escape(httpc, url);
     http_client_set_method(httpc, HTTP_METHOD_PUT);
-    http_client_enable_response_body(httpc);
     http_client_set_header(httpc, "Authorization", access_token);
-    //http_client_set_upload_file(httpc, drive->fd, url, fsize);
+    http_client_enable_response_body(httpc);
 
+    //if If app splits a file into multiple byte ranges,
+    //the size of each byte range MUST be a multiple of 320 KiB (327,680 bytes)
+    int flag = 0;
+    while(!flag)
+    {
+        char fragment_range[CONTENT_LEN];
+        char req_body[CONTENT_LEN];
+        int index = 0;
 
+        if(file_len > FILE_FRAGEMENT_SIZE){
+            snprintf(fragment_range, sizeof(fragment_range), "bytes %d-%d/%d", i-1, i+FILE_FRAGEMENT_SIZE-1, file_size(file->local_path));
+            snprintf(req_body, sizeof(req_body), "<bytes %d-%d of the file>",i-1, i+FILE_FRAGEMENT_SIZE-1);
+        }
+        else{
+            flag = 1;
+            snprintf(fragment_size, sizeof(fragment_size), "%d", file_size(file->local_path)-index);
+            snprintf(fragment_range, sizeof(fragment_range), "bytes %d-%d/%d", i-1, file_size(file->local_path)-1, file_size(file->local_path));
+            strcpy(req_body, "<final bytes of the file>");
+        }
 
+        http_client_set_header(httpc, "Content-Length", fragment_size);
+        http_client_set_header(httpc, "Content-Range", fragment_range);
+        http_client_set_request_body_instant(httpc, req_body, strlen(req_body));
 
+        rc = http_client_request(httpc);
+        if (rc)
+            goto error_exit;
 
+        rc = http_client_get_response_code(httpc, &resp_code);
+        if (rc < 0)
+            goto error_exit;
 
+        if(resp_code == 401) {
+            oauth_client_set_expired(drv->credential);
+            goto error_exit;
+        }
 
+        if(resp_code == 416)
+            //todo: handle the error status
+            goto error_exit;
 
+        if (resp_code != 202 && !flag)
+            goto error_exit;
 
+        if(resp_code ！= 201 && flag)
+            goto error_exit;
 
-    http_client_close(httpc);
+        resp_body_str = http_client_move_response_body(httpc, NULL);
+        if (!resp_body_str)
+            goto error_exit;
 
+        resp_part = cJSON_Parse(resp_body_str);
+        if (!resp_part)
+            goto error_exit;
+
+        cJSON *ner_part = cJSON_GetObjectItemCaseSensitive(resp_part, "nextExpectedRanges");
+        free(ner_part);
+        ner_part = NULL;
+        if (!ner_part || (ner_part && (!*ner_part->valuestring)))
+            goto error_exit;
+
+        if(!flag){
+            sscanf(ner_part->valuestring, "["%d-"]", index);
+            i = index;
+            file_len = file_len - index;
+        }
+    }
+
+    if(access_token)
+        free(access_token);
+    if(httpc)
+        http_client_close(httpc);
+    if (req_body)
+        cJSON_Delete(req_body);
+
+    return 0;
 
 error_exit:
     if(access_token)
@@ -278,7 +370,6 @@ error_exit:
         cJSON_Delete(req_body);
 
     return -1;
-
 }
 
 static int file_size(const char* path)
@@ -347,10 +438,10 @@ static int ondrive_file_close(HiveFile *file)
             if(upload_small_file(file, len) == -1)
                 return -1;
         }
-        else {      //large file
-
+        else {
+            if(upload_large_file(file) == -1)
+                return -1;
         }
-
     }
 
     rc = close(drv_file->fd);
@@ -462,6 +553,17 @@ HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags
     cJSON *resp_part = NULL;
     cJSON *location_part = NULL;
 
+    strcpy(file->local_path, persistent_location);
+    strcat(file->local_path, path);
+
+    int fd = open(file->local_path, flags);
+    if(!fd)
+        return goto_exit;
+
+    file->fd = fd;
+    file->flags = flags;
+    file->upload_flag = 0;
+
     rc = oauth_client_get_access_token(drive->credential, &access_token);
     if(rc)
         goto error_exit;
@@ -516,20 +618,18 @@ HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags
         goto error_exit;
 
     strcpy(download_url, location_part->valuestring);
+    http_client_reset(httpc);
+    http_client_set_url_escape(httpc, download_url);
+    http_client_set_response_body(httpc, download_file, fd);
+    http_client_enable_response_body(httpc);
 
+    rc = http_client_request(httpc);
+    if(rc)
+        return goto_exit;
+
+    fclose(fd);
+    free(access_token);
     http_client_close(httpc);
-
-    strcpy(file->local_path, persistent_location);
-    strcat(file->local_path, path);
-    //Todo: how to download file
-
-    file->flags = flags;
-    file->upload_flag = 0;
-
-    fd = open(file->local_path, flags);
-    if(fd != -1)
-        file->fd = fd;
-    //Todo:
 
     file->base.read = &onedrive_file_read;
     file->base.write = &onedrive_file_write;
@@ -540,6 +640,8 @@ HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags
     return &file->base;
 
 error_exit:
+    if(fd)
+        fclose(fd);
     if(access_token)
         free(access_token);
     if(httpc)
