@@ -3,7 +3,9 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <crystal.h>
+#ifdef HAVE_UNISTD_H
 #include <unistd.h>
+#endif
 #include <stdio.h>
 #include <sys/stat.h>
 
@@ -31,14 +33,14 @@ static size_t download_file(void *ptr, size_t size, size_t nmemb, void *stream)
     return written;
 }
 
-static int get_item_id(HiveDrive *obj, const char *path)
+static int get_item_id(HiveFile *obj, const char *path)
 {
-    OneDriveDrive *drive = (OneDriveDrive*)obj;
+    OneDriveFile *file = (OneDriveFile*)obj;
+    OneDriveDrive *drive = (OneDriveDrive*)(file->base->drive);
 
     char* access_token = NULL;
     char url[MAXPATHLEN + 1];
-    int item_id;
-    int rc;
+    int item_id, rc;
     long resp_code;
     http_client_t *httpc = NULL;
     char *resp_body_str = NULL;
@@ -111,9 +113,10 @@ error_exit:
     return -1;
 }
 
-static int upload_small_file(HiveDrive *obj, int fsize)
+static int upload_small_file(HiveFile *obj, int fsize)
 {
-    OneDriveDrive *drive = (OneDriveDrive*)obj;
+    OneDriveFile *file = (OneDriveFile*)obj;
+    OneDriveDrive *drive = (OneDriveDrive*)(file->base->drive);
 
     char* access_token = NULL;
     char url[MAXPATHLEN + 1];
@@ -179,9 +182,10 @@ error_exit:
     return -1;
 }
 
-static int upload_large_file(HiveFile *file, int fsize)
+static int upload_large_file(HiveFile *obj, int fsize)
 {
-    OneDriveDrive *drive = (OneDriveDrive*)obj;
+    OneDriveFile *file = (OneDriveFile*)obj;
+    OneDriveDrive *drive = (OneDriveDrive*)(file->base->drive);
 
     char url[MAXPATHLEN + 1];
     char upload_url[MAXPATHLEN + 1];
@@ -380,60 +384,60 @@ static int file_size(const char* path)
     return statbuf.st_size;
 }
 
-static ssize_t onedrive_file_read(HiveFile * file, char *buf, size_t bufsz)
+static ssize_t onedrive_file_read(HiveFile * obj, char *buf, size_t bufsz)
 {
-    OneDriveFile *drv_file = (OneDriveFile*)file;
+    OneDriveFile *file = (OneDriveFile*)obj;
     ssize_t len;
 
-    if(drv_file->fd <= 0)
+    if(file->fd <= 0)
         return -1;
 
-    len = read(drv_file->fd, buf, bufsz);
+    len = read(file->fd, buf, bufsz);
 
     return len;
 }
 
-static ssize_t onedrive_file_write(HiveFile *file, const char *buf, size_t bufsz)
+static ssize_t onedrive_file_write(HiveFile *obj, const char *buf, size_t bufsz)
 {
-    OneDriveFile *drv_file = (OneDriveFile*)file;
+    OneDriveFile *file = (OneDriveFile*)obj;
     int fd;
     ssize_t len;
 
-    if(drv_file->fd <= 0)
+    if(file->fd <= 0)
         return -1;
 
-    len = write(drv_file->fd, buf, bufsz);
+    len = write(file->fd, buf, bufsz);
     if(len < 0)
-        drv_file->upload_flag = 0;
+        file->upload_flag = 0;
 
-    drv_file->upload_flag = 1;
+    file->upload_flag = 1;
 
     return len;
 }
 
-static ssize_t onedrive_file_lseek(HiveFile *file, size_t offset, HiveFileSeekWhence whence)
+static ssize_t onedrive_file_lseek(HiveFile *obj, size_t offset, HiveFileSeekWhence whence)
 {
-    OneDriveFile *drv_file = (OneDriveFile*)file;
+    OneDriveFile *file = (OneDriveFile*)obj;
     ssize_t len;
 
-    if(drv_file->fd <= 0)
+    if(file->fd <= 0)
         return -1;
 
-    len = lseek(drv_file->fd, offset, whence);
+    len = lseek(file->fd, offset, whence);
 
     return len;
 }
 
-static int ondrive_file_close(HiveFile *file)
+static int ondrive_file_close(HiveFile *obj)
 {
-    OneDriveFile *drv_file = (OneDriveFile*)file;
+    OneDriveFile *file = (OneDriveFile*)obj;
     int rc;
 
     if(drv_file->fd <= 0)
         return -1;
 
-    if(drv_file->upload_flag) {
-        int len = file_size(drv_file->local_path);
+    if(file->upload_flag) {
+        int len = file_size(file->local_path);
         if(len <= FILE_LARGE_SIZE){
             if(upload_small_file(file, len) == -1)
                 return -1;
@@ -444,17 +448,17 @@ static int ondrive_file_close(HiveFile *file)
         }
     }
 
-    rc = close(drv_file->fd);
+    rc = close(file->fd);
     if(rc)
         return -1;
 
-    return remove(drv_file->local_path);;
+    return remove(file->local_path);;
 }
 
-static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
+static int ondrive_file_get_path(HiveFile *obj, char *buf, size_t bufsz)
 {
-    OneDriveFile* drv_file = (OneDriveFile*)file;
-    OneDriveDrive *drv = (OneDriveDrive*)(file->drive);
+    OneDriveFile* file = (OneDriveFile*)obj;
+    OneDriveDrive *drive = (OneDriveDrive*)(file->base->drive);
 
     char url[MAXPATHLEN + 1];
     int len;
@@ -466,7 +470,7 @@ static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
     cJSON *resp_part = NULL;
     cJSON *root_part = NULL;
 
-    rc = oauth_client_get_access_token(drv->credential, &access_token);
+    rc = oauth_client_get_access_token(drive->credential, &access_token);
     if(rc)
         goto error_exit;
 
@@ -474,7 +478,7 @@ static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
     if(!httpc)
         goto error_exit;
 
-    rc = snprintf(url, sizeof(url), "%s/root", drv->drv_url);
+    rc = snprintf(url, sizeof(url), "%s/root", drive->drv_url);
     if (rc < 0 || rc >= sizeof(url))
         goto error_exit;
 
@@ -492,7 +496,7 @@ static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
         goto error_exit;
 
     if(resp_code == 401) {
-        oauth_client_set_expired(drv->credential);
+        oauth_client_set_expired(drive->credential);
         goto error_exit;
     }
 
@@ -518,7 +522,7 @@ static int ondrive_file_get_path(HiveFile *file, char *buf, size_t bufsz)
         goto error_exit;
 
     strcpy(buf, root_part->valuestring);
-    strcat(buf, drv_file->file_path);
+    strcat(buf, file->file_path);
 
     http_client_close(httpc);
 
@@ -533,11 +537,9 @@ error_exit:
     return -1;
 }
 
-
-
-HiveFile *onedrive_file_open(HiveDrive *obj, const char *path, HiveFileOpenFlags flags)
+HiveFile *onedrive_file_open(HiveDrive *base, const char *path, HiveFileOpenFlags flags)
 {
-    OneDriveDrive *drive = (OneDriveDrive*)obj;
+    OneDriveDrive *drive = (OneDriveDrive*)base;
 
     OneDriveFile *file;
     char path[MAXPATH + 1];

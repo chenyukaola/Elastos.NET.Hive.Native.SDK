@@ -32,6 +32,11 @@ extern "C" {
 #define HIVE_API
 #endif
 
+#if defined(_WIN32) || defined(_WIN64)
+#include <crtdefs.h>
+typedef ptrdiff_t       ssize_t;
+#endif
+
 typedef struct HiveClient       HiveClient;
 typedef struct HiveClientInfo   HiveClientInfo;
 typedef struct HiveDrive        HiveDrive;
@@ -164,10 +169,10 @@ HIVE_API
 int hive_file_get_path(HiveFile *file, char *buf, size_t bufsz);
 
 HIVE_API
-ssize_t hive_file_lseek(HiveFile *, size_t offset, HiveFileSeekWhence whence);
+ssize_t hive_file_lseek(HiveFile *file, size_t offset, HiveFileSeekWhence whence);
 
 HIVE_API
-ssize_t hive_file_read(HiveFile *, char *buf, size_t bufsz);
+ssize_t hive_file_read(HiveFile *file, char *buf, size_t bufsz);
 
 HIVE_API
 ssize_t hive_file_write(HiveFile *file, const char *buf, size_t bufsz);

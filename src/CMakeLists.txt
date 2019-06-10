@@ -52,7 +52,7 @@ set(SRC
     vendors/onedrive/onedrive_client.c
     vendors/onedrive/onedrive_drive.c
     vendors/onedrive/onedrive_file.c
-    vendors/owncloud/owncloud.c
+    vendors/owncloud/owncloud.c)
 
 set(HEADERS
     ela_hive.h)

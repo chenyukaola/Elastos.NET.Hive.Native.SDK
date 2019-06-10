@@ -3,6 +3,6 @@
 
 #include "file.h"
 
-HiveFile *onedrive_file_open(HiveDrive *obj, char *path, HiveFileOpenFlags flags);
+HiveFile *onedrive_file_open(HiveDrive *base, char *path, HiveFileOpenFlags flags);
 
 #endif // __ONEDRIVE_FILE_H__

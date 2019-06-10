@@ -1,7 +1,7 @@
 #ifndef __FILE_H__
 #define __FILE_H__
 
-#include "elastos_hive.h"
+#include "ela_hive.h"
 
 struct HiveFile {
     HiveDrive *drive;

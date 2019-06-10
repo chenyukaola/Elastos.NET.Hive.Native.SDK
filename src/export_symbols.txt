@@ -14,4 +14,10 @@ _hive_drive_move_file
 _hive_drive_copy_file
 _hive_drive_delete_file
 _hive_drive_close
+_hive_file_open
+_hive_file_close
+_hive_file_get_path
+_hive_file_lseek
+_hive_file_read
+_hive_file_write
 _hive_client_invalidate_credential

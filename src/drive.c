@@ -1,7 +1,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <crystal.h>
+#ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
+#endif
 
 #include "drive.h"
 #include "client.h"
@@ -146,6 +148,7 @@ HiveFile *hive_file_open(HiveDrive *drv, const char *path, HiveFileOpenFlags mod
 {
     HiveFile *file;
     int len;
+    int rc;
 
     HiveFileOpenFlags op = mode & HIVE_FILE_OPS_FLAGS;
     HiveFileOpenFlags wr_opt = mode & HIVE_FILE_WR_OPT_FLAGS;
@@ -168,7 +171,7 @@ HiveFile *hive_file_open(HiveDrive *drv, const char *path, HiveFileOpenFlags mod
     }*/
 
     ref(drv);
-    int = drv->open_file(drv, path, mode, &file);
+    rc = drv->open_file(drv, path, mode, &file);
     deref(drv);
     if(rc)
         return NULL;
