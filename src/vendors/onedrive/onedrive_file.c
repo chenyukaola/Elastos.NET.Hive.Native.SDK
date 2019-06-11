@@ -9,14 +9,15 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
+#include "ondrive_drive.h"
 #include "onedrive_file.h"
 #include "http_client.h"
 #include "oauth_client.h"
 
-#define CONTENT_LEN         128
-#define FILE_LARGE_SIZE     1024*1024
-#define FILE_FRAGEMENT_SIZE 327680
-#define FILE_MAX_LARGE_SIZE 1048576*60
+#define CONTENT_LEN             128
+#define FILE_LARGE_SIZE         1024*1024
+#define FILE_MAX_FRAGEMENT_SIZE 327680
+#define FILE_MAX_LARGE_SIZE     1048576*60
 
 typedef struct OneDriveFile {
     HiveFile base;
@@ -26,6 +27,14 @@ typedef struct OneDriveFile {
     char local_path[MAXPATHLEN + MAXPATHLEN + 1];
     HiveFileOpenFlags flags;
 } OneDriveFile;
+
+static int get_file_size(const char* path)
+{
+    struct stat statbuf;
+    stat(path,&statbuf);
+
+    return statbuf.st_size;
+}
 
 static ssize_t download_file(void *ptr, size_t size, size_t nmemb, void *stream)
 {
@@ -148,7 +157,7 @@ static int upload_small_file(HiveFile *obj, int fsize)
     if(len == -1)
         goto error_exit;
 
-    item_id = get_item_id(file);
+    item_id = get_item_id((HiveFile *)file);
     if(item_id < 0)
         goto error_exit;
 
@@ -223,11 +232,11 @@ static int upload_large_file(HiveFile *obj, int fsize)
     cJSON *parent_ref = NULL;
     cJSON *resp_part = NULL;
     cJSON *uploadurl_part = NULL;
-    int rc, item_id;
-    int i = 0;
+    int rc, item_id, i=0, is_finish = 0;
+    int total_len, remain_len;
 
-    int file_len = file_size(file->local_path);
-    snprintf(fragment_size, 2, "%d", file_len);
+    int total_len = get_file_size(file->local_path);
+    snprintf(fragment_size, 2, "%d", total_len);
 
     req_body = cJSON_CreateObject();
     if (!req_body)
@@ -247,12 +256,10 @@ static int upload_large_file(HiveFile *obj, int fsize)
         goto error_exit;
 
     req_body_str = cJSON_PrintUnformatted(req_body);
-    cJSON_Delete(req_body);
-    req_body = NULL;
     if (!req_body_str)
         goto error_exit;
 
-    rc = oauth_client_get_access_token(drv->credential, &access_token);
+    rc = oauth_client_get_access_token(drive->credential, &access_token);
     if (rc)
         goto error_exit;
 
@@ -260,7 +267,7 @@ static int upload_large_file(HiveFile *obj, int fsize)
     if (!httpc)
         goto error_exit;
 
-    item_id = get_item_id(obj);
+    item_id = get_item_id((HiveFile *)file);
     if(item_id < 0)
         goto error_exit;
 
@@ -285,7 +292,7 @@ static int upload_large_file(HiveFile *obj, int fsize)
         goto error_exit;
 
     if(resp_code == 401) {
-        oauth_client_set_expired(drv->credential);
+        oauth_client_set_expired(drive->credential);
         goto error_exit;
     }
 
@@ -301,8 +308,6 @@ static int upload_large_file(HiveFile *obj, int fsize)
         goto error_exit;
 
     uploadurl_part = cJSON_GetObjectItemCaseSensitive(resp_part, "uploadUrl");
-    free(resp_part);
-    resp_part = NULL;
     if (!uploadurl_part || (uploadurl_part && (!*uploadurl_part->valuestring)))
         goto error_exit;
 
@@ -312,27 +317,29 @@ static int upload_large_file(HiveFile *obj, int fsize)
 
     http_client_set_url_escape(httpc, url);
     http_client_set_method(httpc, HTTP_METHOD_PUT);
-    http_client_set_header(httpc, "Authorization", access_token);
-    http_client_enable_response_body(httpc);
 
     //if If app splits a file into multiple byte ranges,
     //the size of each byte range MUST be a multiple of 320 KiB (327,680 bytes)
-    int flag = 0;
-    while(!flag)
+    //int flag = 0;
+    remain_len = total_len;
+    while(remain_len > 0)
     {
         char fragment_range[CONTENT_LEN];
-        char req_body[CONTENT_LEN];
+        char req_body[FILE_MAX_FRAGEMENT_SIZE+1];
         int index = 0;
 
-        if(file_len > FILE_FRAGEMENT_SIZE){
-            snprintf(fragment_range, sizeof(fragment_range), "bytes %d-%d/%d", i-1, i+FILE_FRAGEMENT_SIZE-1, file_size(file->local_path));
-            snprintf(req_body, sizeof(req_body), "<bytes %d-%d of the file>",i-1, i+FILE_FRAGEMENT_SIZE-1);
+        if(remain_len >= FILE_FRAGEMENT_SIZE) {
+            snprintf(fragment_range, sizeof(fragment_range), "bytes %d-%d/%d", total_len-remain_len, total_len-remain_len+FILE_MAX_FRAGEMENT_SIZE-1, total_len);
+            if(read(file->fd, req_body, FILE_MAX_FRAGEMENT_SIZE) == -1)
+                goto error_exit;
+            remain_len = remain_len - FILE_MAX_FRAGEMENT_SIZE;
         }
         else{
-            flag = 1;
-            snprintf(fragment_size, sizeof(fragment_size), "%d", file_size(file->local_path)-index);
-            snprintf(fragment_range, sizeof(fragment_range), "bytes %d-%d/%d", i-1, file_size(file->local_path)-1, file_size(file->local_path));
-            strcpy(req_body, "<final bytes of the file>");
+            snprintf(fragment_size, sizeof(fragment_size), "%d", remain_len);
+            snprintf(fragment_range, sizeof(fragment_range), "bytes %d-%d/%d", total_len-remain_len, total_len-1, total_len);
+            if(read(file->fd, req_body, remain_len))
+                goto erroe_exit;
+            remain_len = 0;
         }
 
         http_client_set_header(httpc, "Content-Length", fragment_size);
@@ -347,68 +354,44 @@ static int upload_large_file(HiveFile *obj, int fsize)
         if (rc < 0)
             goto error_exit;
 
-        if(resp_code == 401) {
-            oauth_client_set_expired(drv->credential);
-            goto error_exit;
-        }
-
         if(resp_code == 416)
             //todo: handle the error status
             goto error_exit;
 
-        if (resp_code != 202 && !flag)
+        if(resp_code == 409)
+            //todo: handle conflict
             goto error_exit;
 
-        if(resp_code ！= 201 && flag)
+        if(resp_code != 202 && remain_len > 0)
             goto error_exit;
 
-        resp_body_str = http_client_move_response_body(httpc, NULL);
-        if (!resp_body_str)
+        if(resp_code ！= 201 && remain_len == 0)
             goto error_exit;
-
-        resp_part = cJSON_Parse(resp_body_str);
-        if (!resp_part)
-            goto error_exit;
-
-        cJSON *ner_part = cJSON_GetObjectItemCaseSensitive(resp_part, "nextExpectedRanges");
-        free(ner_part);
-        ner_part = NULL;
-        if (!ner_part || (ner_part && (!*ner_part->valuestring)))
-            goto error_exit;
-
-        if(!flag){
-            sscanf(ner_part->valuestring, "["%d-"]", index);
-            i = index;
-            file_len = file_len - index;
-        }
     }
-
-    if(access_token)
-        free(access_token);
-    if(httpc)
-        http_client_close(httpc);
-    if (req_body)
-        cJSON_Delete(req_body);
-
-    return 0;
+    is_finish = 1;
 
 error_exit:
-    if(access_token)
+    if(access_token) {
         free(access_token);
-    if(httpc)
+        access_token = NULL;
+    }
+    if(httpc) {
         http_client_close(httpc);
-    if (req_body)
+        httpc = NULL;
+    }
+    if (req_body) {
         cJSON_Delete(req_body);
+        req_body = NULL;
+    }
+    if(resp_part) {
+        free(resp_part);
+        resp_part = NULL;
+    }
+
+    if(is_finish)
+        return 0;
 
     return -1;
-}
-
-static int file_size(const char* path)
-{
-    struct stat statbuf;
-    stat(path,&statbuf);
-
-    return statbuf.st_size;
 }
 
 static ssize_t onedrive_file_read(HiveFile * obj, char *buf, size_t bufsz)
@@ -457,7 +440,7 @@ static int ondrive_file_close(HiveFile *obj)
         return -1;
 
     if(file->upload_flag) {
-        len = file_size(file->local_path);
+        len = get_file_size(file->local_path);
         if(len <= FILE_LARGE_SIZE) {
             if(upload_small_file(file, len) == -1)
                 return -1;
