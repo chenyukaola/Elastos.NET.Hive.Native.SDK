@@ -166,9 +166,7 @@ HiveFile *hive_file_open(HiveDrive *drv, const char *path, HiveFileOpenFlags mod
     } else if (op == HIVE_FILE_WRONLY || op == HIVE_FILE_RDWR) {
         if ((wr_opt & HIVE_FILE_CREAT) && (wr_opt & ~HIVE_FILE_CREAT))
             return NULL;
-    } /* else {
-        return NULL;
-    }*/
+    }
 
     ref(drv);
     rc = drv->open_file(drv, path, mode, &file);
